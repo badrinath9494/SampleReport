@@ -1,0 +1,32 @@
+name: Auto PR to main
+
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+      - "hotfix/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: ${{ github.ref_name }}
+          title: "Auto PR: ${{ github.ref_name }} -> main"
+          body: |
+            This PR was auto-created from branch `${{ github.ref_name }}`.
+            Please review CI checks and merge when ready.
+          labels: |
+            automated-pr
