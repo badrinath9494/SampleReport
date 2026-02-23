@@ -1,0 +1,108 @@
+name: CI Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      model_changed: ${{ steps.filter.outputs.model }}
+      report_changed: ${{ steps.filter.outputs.report }}
+      notebook_changed: ${{ steps.filter.outputs.notebook }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            model:
+              - '**/*.tmdl'
+              - '**/*.pbism'
+              - '**/semanticmodels/**'
+            report:
+              - '**/*.Report/**'
+              - '**/report.json'
+              - '**/definition.pbir'
+            notebook:
+              - '**/*.ipynb'
+
+  gate1-code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install black flake8 nbformat detect-secrets
+      - name: Black check
+        run: |
+          files=$(git ls-files '*.py')
+          if [ -n "$files" ]; then black --check $files; else echo "No Python files"; fi
+      - name: Flake8 check
+        run: |
+          files=$(git ls-files '*.py')
+          if [ -n "$files" ]; then flake8 $files; else echo "No Python files"; fi
+      - name: Notebook syntax check
+        run: python scripts/ci/validate_notebooks.py
+      - name: Secret scan
+        run: |
+          detect-secrets scan --all-files > .secrets.baseline
+          detect-secrets audit .secrets.baseline --stats || true
+
+  gate2-model-quality:
+    runs-on: ubuntu-latest
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.model_changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate TMDL indentation uses tabs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          bad=[]
+          for p in pathlib.Path('.').rglob('*.tmdl'):
+              for i,l in enumerate(p.read_text(encoding='utf-8', errors='ignore').splitlines(),1):
+                  if l.startswith(' ') and not l.startswith('\t'):
+                      bad.append(f"{p}:{i}")
+          if bad:
+              print('TMDL indentation issues:')
+              print('\n'.join(bad[:200]))
+              sys.exit(1)
+          print('TMDL indentation check passed')
+          PY
+
+  gate3-best-practices:
+    runs-on: ubuntu-latest
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.model_changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Basic anti-pattern check
+        shell: bash
+        run: |
+          if grep -RIn --include='*.tmdl' -E 'SELECT \*|hardcoded|TODO' .; then
+            echo 'Potential anti-patterns found in model files. Review required.'
+            exit 1
+          fi
+          echo 'Best-practice baseline check passed'
+
+  gate4-report-quality:
+    runs-on: ubuntu-latest
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.report_changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate report JSON structure
+        run: python scripts/ci/validate_json.py
